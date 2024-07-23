@@ -1,35 +1,31 @@
-import fs from 'fs';
-import path from 'path';
-import { parse, stringify } from 'csv-parse/sync';
-
-const csvFilePath = path.join(process.cwd(), 'domains.csv');
-const backupFilePath = path.join(process.cwd(), 'domains_backup.csv');
+import { kv } from '@vercel/kv';
 
 export default async function handler(req, res) {
+  console.log('KV_URL:', process.env.KV_URL);  // Add this line for debugging
+
   if (req.method === 'POST') {
     try {
       const { domains } = req.body;
       
-      // Backup current CSV
-      fs.copyFileSync(csvFilePath, backupFilePath);
-
-      // Write new domains to CSV
-      const csv = stringify(domains, { header: true, columns: ['domain', 'selector'] });
-      fs.writeFileSync(csvFilePath, csv);
+      // Update domains in KV storage
+      await kv.set('domains', JSON.stringify(domains));
 
       res.status(200).json({ message: 'Domains updated successfully' });
     } catch (error) {
       console.error('Error updating domains:', error);
-      res.status(500).json({ error: 'Failed to update domains' });
+      res.status(500).json({ error: `Failed to update domains: ${error.message}` });
     }
   } else if (req.method === 'GET') {
     try {
-      const fileContent = fs.readFileSync(csvFilePath, 'utf8');
-      const domains = parse(fileContent, { columns: true, skip_empty_lines: true });
+      console.log('Fetching domains from KV storage...');
+      const domainsJson = await kv.get('domains');
+      console.log('Received domains from KV:', domainsJson);
+      const domains = Array.isArray(domainsJson) ? domainsJson : JSON.parse(domainsJson || '[]');
+      console.log('Parsed domains:', domains);
       res.status(200).json(domains);
     } catch (error) {
-      console.error('Error reading domains:', error);
-      res.status(500).json({ error: 'Failed to read domains' });
+      console.error('Detailed error reading domains:', error);
+      res.status(500).json({ error: `Failed to read domains: ${error.message}` });
     }
   } else {
     res.setHeader('Allow', ['POST', 'GET']);

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Container, Row, Col, Button, Table, ProgressBar, Alert, Modal, Form } from 'react-bootstrap';
 
-const CHUNK_SIZE = 3; // This should match the CHUNK_SIZE in the API
+const CHUNK_SIZE = 3;
 
 function DomainRow({ result }) {
   const [expanded, setExpanded] = useState(false);
@@ -52,28 +52,16 @@ export default function Home() {
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [notificationPermission, setNotificationPermission] = useState('default');
   const [error, setError] = useState(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editableDomains, setEditableDomains] = useState([]);
+  const [lastRunDate, setLastRunDate] = useState(null);
+  const [lastRunResults, setLastRunResults] = useState([]);
 
   useEffect(() => {
-    checkNotificationPermission();
     fetchDomains();
+    fetchLastRunResults();
   }, []);
-
-  function checkNotificationPermission() {
-    if ('Notification' in window) {
-      setNotificationPermission(Notification.permission);
-    }
-  }
-
-  async function requestNotificationPermission() {
-    if ('Notification' in window) {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-    }
-  }
 
   async function fetchResults() {
     setLoading(true);
@@ -83,45 +71,51 @@ export default function Home() {
     let nextIndex = 0;
     let isComplete = false;
     let total = 0;
-    let retries = 0;
-    const maxRetries = 3;
+    let allResults = [];
 
-    while (!isComplete && retries < maxRetries) {
+    while (!isComplete) {
       try {
+        console.log(`Fetching chunk starting at index ${nextIndex}`);
         const response = await fetch(`/api/daily-check?start=${nextIndex}`);
         if (!response.ok) {
-          throw new Error('Network response was not ok');
+          const errorText = await response.text();
+          console.error(`Error response for chunk ${nextIndex}:`, errorText);
+          if (response.status === 504) {
+            console.log("Timeout occurred, continuing with next chunk");
+            nextIndex += CHUNK_SIZE;
+            continue;
+          }
+          throw new Error(`Network response was not ok: ${response.statusText}`);
         }
         const data = await response.json();
-        setResults(prev => [...prev, ...data.results]);
+        console.log(`Received data for chunk ${nextIndex}:`, data);
+        allResults = [...allResults, ...data.results];
+        setResults(allResults);
         nextIndex = data.nextIndex;
         isComplete = data.isComplete;
         total = data.total;
         setProgress(Math.round((nextIndex / total) * 100));
-        retries = 0; // Reset retries on successful request
       } catch (error) {
-        console.error('Error fetching chunk:', error);
-        retries++;
-        if (retries >= maxRetries) {
-          setError(`Failed to fetch results after ${maxRetries} attempts. Please try again later.`);
-          break;
+        console.error(`Error fetching chunk ${nextIndex}:`, error);
+        if (allResults.length > 0) {
+          setError(`Some domains could not be checked. Partial results are available.`);
+        } else {
+          setError(`Failed to fetch results. Please try again later. Error: ${error.message}`);
         }
-        // Wait for a short time before retrying
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        break;
       }
     }
 
-    const failedDomains = results.filter(result => 
-      !result.dkim || !result.spf || !result.dmarc
-    );
-
-    if (failedDomains.length > 0 && notificationPermission === 'granted') {
-      new Notification('Domain Authentication Alert', {
-        body: `${failedDomains.length} domain(s) have failed authentication checks.`,
+    setLoading(false);
+    if (allResults.length > 0) {
+      // Store partial results
+      await fetch('/api/update-last-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ results: allResults, date: new Date().toISOString() })
       });
     }
-
-    setLoading(false);
+    fetchLastRunResults();
   }
 
   async function fetchDomains() {
@@ -146,14 +140,14 @@ export default function Home() {
         body: JSON.stringify({ domains: editableDomains }),
       });
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Failed to update domains: ${errorData.error || response.statusText}`);
+        throw new Error('Failed to update domains');
       }
       setShowEditModal(false);
-      fetchResults(); // Refresh results with new domains
+      setError('Domains updated successfully!');
+      setTimeout(() => setError(null), 3000);
     } catch (error) {
       console.error('Error updating domains:', error);
-      setError(`Failed to update domains: ${error.message}`);
+      setError('Failed to update domains. Please try again.');
     }
   }
 
@@ -163,12 +157,32 @@ export default function Home() {
       if (!response.ok) {
         throw new Error('Failed to reset domains');
       }
-      fetchDomains(); // Refresh the domain list
+      fetchDomains();
       setShowEditModal(false);
-      fetchResults(); // Refresh results with reset domains
+      setError('Domains reset successfully!');
+      setTimeout(() => setError(null), 3000);
     } catch (error) {
       console.error('Error resetting domains:', error);
       setError('Failed to reset domains. Please try again.');
+    }
+  }
+
+  async function fetchLastRunResults() {
+    try {
+      console.log('Fetching last run results...');
+      const response = await fetch('/api/last-run-results');
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Error response:', errorText);
+        throw new Error(`Failed to fetch last run results: ${response.statusText}`);
+      }
+      const data = await response.json();
+      console.log('Received last run data:', data);
+      setLastRunResults(data.results);
+      setLastRunDate(data.lastRunDate);
+    } catch (error) {
+      console.error('Detailed error fetching last run results:', error);
+      setError(`Failed to fetch last run results: ${error.message}`);
     }
   }
 
@@ -196,14 +210,6 @@ export default function Home() {
           >
             Edit Domains
           </Button>
-          {notificationPermission !== 'granted' && (
-            <Button 
-              variant="success"
-              onClick={requestNotificationPermission}
-            >
-              Enable Notifications
-            </Button>
-          )}
         </Col>
       </Row>
       {loading && (
@@ -220,7 +226,16 @@ export default function Home() {
           </Col>
         </Row>
       )}
-      {!loading && results.length > 0 && (
+      {lastRunDate && (
+        <Row className="mb-4">
+          <Col>
+            <Alert variant="info">
+              Last run date: {new Date(lastRunDate).toLocaleString()}
+            </Alert>
+          </Col>
+        </Row>
+      )}
+      {!loading && (results.length > 0 || lastRunResults.length > 0) && (
         <Row>
           <Col>
             <Table striped bordered hover>
@@ -233,7 +248,7 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody>
-                {results.map((result, index) => (
+                {(results.length > 0 ? results : lastRunResults).map((result, index) => (
                   <DomainRow key={index} result={result} />
                 ))}
               </tbody>

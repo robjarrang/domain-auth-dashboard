@@ -1,79 +1,53 @@
+import { kv } from '@vercel/kv';
 import { checkDomain } from '../../lib/domainChecker';
-import { parse } from 'csv-parse/sync';
-import fs from 'fs';
-import path from 'path';
-import dns from 'dns/promises';
 
-const CHUNK_SIZE = 3; // Process 3 domains per request
-const DNS_TIMEOUT = 5000; // 5 seconds timeout for DNS lookups
-
-async function getDetailedResults(domain, selector) {
-  try {
-    const dkimResult = await Promise.race([
-      dns.resolveTxt(`${selector}._domainkey.${domain}`),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DKIM lookup timeout')), DNS_TIMEOUT))
-    ]);
-
-    const spfResult = await Promise.race([
-      dns.resolveTxt(domain),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('SPF lookup timeout')), DNS_TIMEOUT))
-    ]);
-
-    const dmarcResult = await Promise.race([
-      dns.resolveTxt(`_dmarc.${domain}`),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('DMARC lookup timeout')), DNS_TIMEOUT))
-    ]);
-
-    return {
-      dkimDetails: dkimResult,
-      spfDetails: spfResult.filter(record => record[0].startsWith('v=spf1')),
-      dmarcDetails: dmarcResult,
-      dkim: dkimResult.length > 0,
-      spf: spfResult.some(record => record[0].startsWith('v=spf1')),
-      dmarc: dmarcResult.some(record => record[0].startsWith('v=DMARC1'))
-    };
-  } catch (error) {
-    console.error(`Error getting detailed results for ${domain}:`, error.message);
-    return {
-      dkimDetails: [],
-      spfDetails: [],
-      dmarcDetails: [],
-      dkim: false,
-      spf: false,
-      dmarc: false,
-      error: true
-    };
-  }
-}
+const CHUNK_SIZE = 3;
 
 export default async function handler(req, res) {
+  console.log('KV_URL:', process.env.KV_URL);
   const { start = 0 } = req.query;
   const startIndex = parseInt(start, 10);
 
   try {
-    const csvFilePath = path.join(process.cwd(), 'domains.csv');
-    const fileContent = fs.readFileSync(csvFilePath, 'utf8');
-    const records = parse(fileContent, { columns: true, skip_empty_lines: true });
+    console.log('Fetching domains from KV storage...');
+    const domainsJson = await kv.get('domains');
+    console.log('Received domains from KV:', domainsJson);
+    const domains = Array.isArray(domainsJson) ? domainsJson : JSON.parse(domainsJson || '[]');
+    console.log('Parsed domains:', domains);
 
-    const chunk = records.slice(startIndex, startIndex + CHUNK_SIZE);
+    const chunk = domains.slice(startIndex, startIndex + CHUNK_SIZE);
+    console.log(`Processing chunk ${startIndex} to ${startIndex + CHUNK_SIZE}`);
     const results = await Promise.all(
       chunk.map(async record => {
-        const result = await getDetailedResults(record.domain, record.selector);
+        console.log(`Checking domain: ${record.domain}`);
+        const result = await checkDomain(record.domain, record.selector);
+        console.log(`Result for ${record.domain}:`, result);
         return { domain: record.domain, ...result };
       })
     );
 
     const nextIndex = startIndex + CHUNK_SIZE;
-    const isComplete = nextIndex >= records.length;
+    const isComplete = nextIndex >= domains.length;
+
+    // Store results, replacing previous results if this is the first chunk
+    console.log('Storing results...');
+    if (startIndex === 0) {
+      await kv.set('lastRunResults', results);
+    } else {
+      const existingResults = await kv.get('lastRunResults') || [];
+      await kv.set('lastRunResults', [...existingResults, ...results]);
+    }
+    await kv.set('lastRunDate', new Date().toISOString());
+    console.log('Results stored successfully');
 
     res.status(200).json({
       results,
       nextIndex: isComplete ? null : nextIndex,
       isComplete,
-      total: records.length
+      total: domains.length
     });
   } catch (error) {
-    console.error('Error processing chunk:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('Detailed error in daily-check:', error);
+    res.status(500).json({ error: `Internal server error: ${error.message}` });
   }
 }
