@@ -186,6 +186,14 @@ export default function Home() {
     }
   }
 
+  function handleRemoveDomain(indexToRemove) {
+    setEditableDomains(prevDomains => prevDomains.filter((_, index) => index !== indexToRemove));
+  }
+
+  function handleAddDomain() {
+    setEditableDomains(prevDomains => [...prevDomains, { domain: '', selector: '' }]);
+  }
+
   return (
     <Container className="py-4">
       <Row className="mb-4">
@@ -266,28 +274,46 @@ export default function Home() {
             {editableDomains.map((domain, index) => (
               <Form.Group key={index} className="mb-3">
                 <Form.Label>Domain {index + 1}</Form.Label>
-                <Form.Control 
-                  type="text" 
-                  value={domain.domain}
-                  onChange={(e) => {
-                    const newDomains = [...editableDomains];
-                    newDomains[index].domain = e.target.value;
-                    setEditableDomains(newDomains);
-                  }}
-                />
-                <Form.Control 
-                  type="text" 
-                  value={domain.selector}
-                  onChange={(e) => {
-                    const newDomains = [...editableDomains];
-                    newDomains[index].selector = e.target.value;
-                    setEditableDomains(newDomains);
-                  }}
-                  className="mt-2"
-                />
+                <div className="d-flex">
+                  <div className="flex-grow-1 me-2">
+                    <Form.Control 
+                      type="text" 
+                      value={domain.domain}
+                      onChange={(e) => {
+                        const newDomains = [...editableDomains];
+                        newDomains[index].domain = e.target.value;
+                        setEditableDomains(newDomains);
+                      }}
+                    />
+                    <Form.Control 
+                      type="text" 
+                      value={domain.selector}
+                      onChange={(e) => {
+                        const newDomains = [...editableDomains];
+                        newDomains[index].selector = e.target.value;
+                        setEditableDomains(newDomains);
+                      }}
+                      className="mt-2"
+                    />
+                  </div>
+                  <Button 
+                    variant="danger" 
+                    onClick={() => handleRemoveDomain(index)}
+                    className="align-self-start"
+                  >
+                    Remove
+                  </Button>
+                </div>
               </Form.Group>
             ))}
           </Form>
+          <Button 
+            variant="success" 
+            onClick={handleAddDomain}
+            className="mt-3"
+          >
+            Add New Domain
+          </Button>
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setShowEditModal(false)}>
